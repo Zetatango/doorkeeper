@@ -10,46 +10,89 @@ describe 'Resource Owner Password Credentials Flow not set up' do
     it 'doesn\'t issue new token' do
       expect do
         post password_token_endpoint_url(client: @client, resource_owner: @resource_owner)
-      end.to_not change { Doorkeeper::AccessToken.count }
+      end.to_not(change { Doorkeeper::AccessToken.count })
     end
   end
 end
 
 describe 'Resource Owner Password Credentials Flow' do
+  let(:client_attributes) { {} }
+
   before do
     config_is_set(:grant_flows, ["password"])
     config_is_set(:resource_owner_from_credentials) { User.authenticate! params[:username], params[:password] }
-    client_exists
+    client_exists(client_attributes)
     create_resource_owner
   end
 
   context 'with valid user credentials' do
-    it 'should issue new token with confidential client' do
-      expect do
-        post password_token_endpoint_url(client: @client, resource_owner: @resource_owner)
-      end.to change { Doorkeeper::AccessToken.count }.by(1)
+    context "with non-confidential/public client" do
+      let(:client_attributes) { { confidential: false } }
 
-      token = Doorkeeper::AccessToken.first
+      context "when client_secret absent" do
+        it "should issue new token" do
+          expect do
+            post password_token_endpoint_url(client_id: @client.uid, resource_owner: @resource_owner)
+          end.to change { Doorkeeper::AccessToken.count }.by(1)
 
-      expect(token.application_id).to eq @client.id
-      should_have_json 'access_token', token.token
+          token = Doorkeeper::AccessToken.first
+
+          expect(token.application_id).to eq @client.id
+          should_have_json 'access_token', token.token
+        end
+      end
+
+      context "when client_secret present" do
+        it "should issue new token" do
+          expect do
+            post password_token_endpoint_url(client: @client, resource_owner: @resource_owner)
+          end.to change { Doorkeeper::AccessToken.count }.by(1)
+
+          token = Doorkeeper::AccessToken.first
+
+          expect(token.application_id).to eq @client.id
+          should_have_json 'access_token', token.token
+        end
+
+        context "when client_secret incorrect" do
+          it "should not issue new token" do
+            expect do
+              post password_token_endpoint_url(client_id: @client.uid, client_secret: 'foobar', resource_owner: @resource_owner)
+            end.not_to(change { Doorkeeper::AccessToken.count })
+
+            expect(response).not_to be_ok
+          end
+        end
+      end
     end
 
-    it 'should issue new token with public client (only client_id present)' do
-      expect do
-        post password_token_endpoint_url(client_id: @client.uid, resource_owner: @resource_owner)
-      end.to change { Doorkeeper::AccessToken.count }.by(1)
+    context "with confidential/private client" do
+      it "should issue new token" do
+        expect do
+          post password_token_endpoint_url(client: @client, resource_owner: @resource_owner)
+        end.to change { Doorkeeper::AccessToken.count }.by(1)
 
-      token = Doorkeeper::AccessToken.first
+        token = Doorkeeper::AccessToken.first
 
-      expect(token.application_id).to eq @client.id
-      should_have_json 'access_token', token.token
+        expect(token.application_id).to eq @client.id
+        should_have_json 'access_token', token.token
+      end
+
+      context "when client_secret absent" do
+        it "should not issue new token" do
+          expect do
+            post password_token_endpoint_url(client_id: @client.uid, resource_owner: @resource_owner)
+          end.not_to(change { Doorkeeper::AccessToken.count })
+
+          expect(response).not_to be_ok
+        end
+      end
     end
 
     it 'should issue new token without client credentials' do
       expect do
         post password_token_endpoint_url(resource_owner: @resource_owner)
-      end.to change { Doorkeeper::AccessToken.count }.by(1)
+      end.to(change { Doorkeeper::AccessToken.count }.by(1))
 
       token = Doorkeeper::AccessToken.first
 
@@ -77,6 +120,45 @@ describe 'Resource Owner Password Credentials Flow' do
       expect(Doorkeeper::AccessToken.count).to be(1)
       should_have_json 'access_token', Doorkeeper::AccessToken.first.token
     end
+
+    context 'with valid, default scope' do
+      before do
+        default_scopes_exist :public
+      end
+
+      it 'should issue new token' do
+        expect do
+          post password_token_endpoint_url(client: @client, resource_owner: @resource_owner, scope: 'public')
+        end.to change { Doorkeeper::AccessToken.count }.by(1)
+
+        token = Doorkeeper::AccessToken.first
+
+        expect(token.application_id).to eq @client.id
+        should_have_json 'access_token', token.token
+        should_have_json 'scope', 'public'
+      end
+    end
+  end
+
+  context 'with invalid scopes' do
+    subject do
+      post password_token_endpoint_url(client: @client,
+                                       resource_owner: @resource_owner,
+                                       scope: 'random')
+    end
+
+    it 'should not issue new token' do
+      expect { subject }.to_not(change { Doorkeeper::AccessToken.count })
+    end
+
+    it 'should return invalid_scope error' do
+      subject
+      should_have_json 'error', 'invalid_scope'
+      should_have_json 'error_description', translated_error_message(:invalid_scope)
+      should_not_have_json 'access_token'
+
+      expect(response.status).to eq(401)
+    end
   end
 
   context 'with invalid user credentials' do
@@ -85,13 +167,13 @@ describe 'Resource Owner Password Credentials Flow' do
         post password_token_endpoint_url(client: @client,
                                          resource_owner_username: @resource_owner.name,
                                          resource_owner_password: 'wrongpassword')
-      end.to_not change { Doorkeeper::AccessToken.count }
+      end.to_not(change { Doorkeeper::AccessToken.count })
     end
 
     it 'should not issue new token without credentials' do
       expect do
         post password_token_endpoint_url(client: @client)
-      end.to_not change { Doorkeeper::AccessToken.count }
+      end.to_not(change { Doorkeeper::AccessToken.count })
     end
   end
 
@@ -101,7 +183,7 @@ describe 'Resource Owner Password Credentials Flow' do
         post password_token_endpoint_url(client_id: @client.uid,
                                          client_secret: 'bad_secret',
                                          resource_owner: @resource_owner)
-      end.to_not change { Doorkeeper::AccessToken.count }
+      end.to_not(change { Doorkeeper::AccessToken.count })
     end
   end
 
@@ -109,7 +191,7 @@ describe 'Resource Owner Password Credentials Flow' do
     it 'should not issue new token with bad client id' do
       expect do
         post password_token_endpoint_url(client_id: 'bad_id', resource_owner: @resource_owner)
-      end.to_not change { Doorkeeper::AccessToken.count }
+      end.to_not(change { Doorkeeper::AccessToken.count })
     end
   end
 end
